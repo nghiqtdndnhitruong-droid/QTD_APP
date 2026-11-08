@@ -65,6 +65,21 @@ export function parseDateInput(
 }
 
 /**
+ * Chuẩn hóa một thời điểm thực (VD: giờ hiện tại) về nửa đêm UTC cùng ngày,
+ * để thống nhất với các ngày nhập tay dd/mm/yyyy vốn được parse theo Date.UTC.
+ * Tránh lệch múi giờ khi cộng thêm tháng để tính ngày tới hạn.
+ */
+export function toUtcMidnight(date: Date): Date {
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+    ),
+  );
+}
+
+/**
  * Định dạng đối tượng Date sang chuỗi dd/mm/yyyy
  */
 export function formatDateDDMMYYYY(date: Date | null | undefined): string | null {

@@ -45,3 +45,33 @@ export class BasePersonIdentityDto extends PersonIdentityWithoutAddressDto {
   @IsNotEmpty({ message: 'Địa chỉ không được để trống' })
   address: string;
 }
+
+/**
+ * Bản ghi DB chứa các trường định danh cá nhân (đã validate khi create)
+ */
+export interface PersonIdentityRecord {
+  fullName: string;
+  idType: IdentityCardType;
+  idNumber: string;
+  issueDate: Date;
+  expiryDate: Date | null;
+  address: string;
+}
+
+/**
+ * Chuyển bản ghi định danh đã lưu trong DB về dạng DTO (issueDate/expiryDate -> chuỗi ISO)
+ * Dùng khi update: đọc lại dữ liệu cũ từ DB và chạy lại pipeline validate.
+ */
+export function buildIdentityDtoFromRecord<T extends PersonIdentityRecord>(
+  record: T,
+): Omit<T, 'issueDate' | 'expiryDate'> & {
+  issueDate: string;
+  expiryDate: string | undefined;
+} {
+  const { issueDate, expiryDate, ...rest } = record;
+  return {
+    ...rest,
+    issueDate: issueDate.toISOString(),
+    expiryDate: expiryDate ? expiryDate.toISOString() : undefined,
+  };
+}
