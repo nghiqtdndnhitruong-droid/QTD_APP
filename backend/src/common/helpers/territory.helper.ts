@@ -23,3 +23,17 @@ export function formatTerritoryAddress(
 
   return `${normalizedHamlet}, ${normalizedCommune}, ${normalizedProvince}`;
 }
+
+/**
+ * Tự động ghép địa chỉ chuẩn cấp Xã - Tỉnh Vĩnh Long (Dùng cho tài sản thế chấp chọn cấp Xã)
+ * Ví dụ: ("Xã Nhị Trường") -> "Xã Nhị Trường, Tỉnh Vĩnh Long"
+ */
+export function formatCommuneAddress(
+  communeName: string,
+  provinceName = DEFAULT_PROVINCE_NAME,
+): string {
+  const normalizedCommune = ensurePrefix(communeName, 'Xã');
+  const normalizedProvince = provinceName?.trim() || DEFAULT_PROVINCE_NAME;
+
+  return `${normalizedCommune}, ${normalizedProvince}`;
+}

@@ -4,6 +4,7 @@ import {
   CollateralOwnerType,
   FundLandCategory,
   LoanDurationType,
+  LoanStatus,
   LoanType,
   RelatedPersonRelationship,
   ValuationType,
@@ -30,7 +31,7 @@ import { CreateBorrowerDto } from '../../borrowers/dto/create-borrower.dto.js';
 export class CreateGuarantorDto extends BasePersonIdentityDto {}
 
 /**
- * Thông tin Tài sản thế chấp (Chỉ chấp nhận Quyền sử dụng đất, địa chỉ lấy từ danh sách địa bàn)
+ * Thông tin Tài sản thế chấp (Chỉ chấp nhận Quyền sử dụng đất, địa chỉ lấy từ danh sách địa bàn cấp Ấp hoặc cấp Xã)
  */
 export class CreateCollateralAssetDto {
   @IsEnum(CollateralAssetType, {
@@ -62,37 +63,44 @@ export class CreateCollateralAssetDto {
   mapSheetNumber: string;
 
   /**
-   * Địa chỉ thửa đất lấy từ danh sách địa bàn (Ấp -> Xã -> Tỉnh Vĩnh Long), có thể khác địa chỉ người vay
+   * Địa chỉ thửa đất có thể chọn từ cấp Ấp (hamletId) hoặc cấp Xã (communeId)
    */
+  @IsOptional()
   @IsUUID('4', {
-    message: 'Vui lòng chọn địa bàn (hamletId) hợp lệ cho thửa đất thế chấp',
+    message: 'Vui lòng chọn địa bàn cấp Ấp (hamletId) hợp lệ',
   })
-  hamletId: string;
+  hamletId?: string | null;
+
+  @IsOptional()
+  @IsUUID('4', {
+    message: 'Vui lòng chọn địa bàn cấp Xã (communeId) hợp lệ',
+  })
+  communeId?: string | null;
 
   @Type(() => Number)
   @IsNumber()
   @Min(0.01, { message: 'Diện tích tài sản phải lớn hơn 0' })
   area: number;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Hình thức sử dụng không được để trống' })
-  usageForm: string;
+  usageForm?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Mục đích sử dụng không được để trống' })
-  usagePurpose: string;
+  usagePurpose?: string | null;
 
   @IsString()
   @IsNotEmpty({ message: 'Thời hạn sử dụng không được để trống' })
   usageTerm: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Nguồn gốc sử dụng không được để trống' })
-  usageOrigin: string;
+  usageOrigin?: string | null;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Hạn chế sử dụng không được để trống' })
-  usageRestriction: string;
+  usageRestriction?: string | null;
 
   @IsEnum(CollateralOwnerType, {
     message:
@@ -100,28 +108,70 @@ export class CreateCollateralAssetDto {
   })
   ownerType: CollateralOwnerType;
 
+  @IsOptional()
   @IsEnum(ValuationType, {
     message: 'Loại định giá phải là QUY_DINH_QUY hoặc THI_TRUONG',
   })
-  valuationType: ValuationType;
+  valuationType?: ValuationType | null;
 
   @IsOptional()
   @IsEnum(FundLandCategory, {
     message:
       'Loại đất theo quy định Quỹ phải là: DAT_BINH_THUONG, DAT_CAP_KENH, DAT_CAP_LO_DAT, DAT_CAP_DUONG_NHUA',
   })
-  fundLandCategory?: FundLandCategory;
+  fundLandCategory?: FundLandCategory | null;
 
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  @Min(1, { message: 'Đơn giá thị trường phải lớn hơn 0' })
-  unitPrice?: number;
+  @Min(0, { message: 'Đơn giá không được âm' })
+  unitPrice?: number | null;
 
   @IsOptional()
   @ValidateNested()
   @Type(() => CreateGuarantorDto)
   guarantor?: CreateGuarantorDto;
+}
+
+/**
+ * Một dòng trong bảng Định giá Tài sản Thế chấp (Section riêng khi vay Thế chấp)
+ */
+export class CreateCollateralValuationItemDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Số thửa trong bảng định giá không được để trống' })
+  plotNumber: string;
+
+  @IsString()
+  @IsNotEmpty({ message: 'Số tờ trong bảng định giá không được để trống' })
+  mapSheetNumber: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01, { message: 'Diện tích trong bảng định giá phải lớn hơn 0' })
+  area: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01, { message: 'Diện tích thực tế định giá phải lớn hơn 0' })
+  actualArea?: number | null;
+
+  @IsOptional()
+  @IsEnum(FundLandCategory, {
+    message:
+      'Loại đất theo quy định Quỹ phải là: DAT_BINH_THUONG, DAT_CAP_KENH, DAT_CAP_LO_DAT, DAT_CAP_DUONG_NHUA',
+  })
+  fundLandCategory?: FundLandCategory | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0, { message: 'Đơn giá định giá không được âm' })
+  unitPrice?: number | null;
+
+  @IsOptional()
+  @IsString()
+  note?: string | null;
 }
 
 /**
@@ -176,6 +226,11 @@ export class CreateLoanPlanDto {
   @IsNotEmpty({ message: 'Mục đích vay vốn không được để trống' })
   loanPurpose: string;
 
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1, { message: 'Tổng nhu cầu vốn của phương án phải lớn hơn 0' })
+  totalCapitalNeed: number;
+
   @IsArray()
   @ArrayMinSize(1, { message: 'Danh sách chi phí phải có ít nhất 1 khoản mục' })
   @ValidateNested({ each: true })
@@ -214,18 +269,18 @@ export class CreateLoanDto {
   @IsNotEmpty({ message: 'Ngày vay không được để trống' })
   loanDate: string;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Ngày giải ngân không được để trống' })
-  disbursementDate: string;
+  disbursementDate?: string | null;
 
   @Type(() => Number)
   @IsNumber()
   @Min(1, { message: 'Số tiền vay phải lớn hơn 0' })
   loanAmount: number;
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty({ message: 'Số khế ước không được để trống' })
-  indentureNumber: string;
+  indentureNumber?: string | null;
 
   @IsEnum(LoanType, { message: 'Loại vay phải là TIN_CHAP hoặc THE_CHAP' })
   loanType: LoanType;
@@ -236,6 +291,12 @@ export class CreateLoanDto {
   durationType: LoanDurationType;
 
   @IsOptional()
+  @IsEnum(LoanStatus, {
+    message: 'Trạng thái khoản vay không hợp lệ',
+  })
+  status?: LoanStatus;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
@@ -243,21 +304,37 @@ export class CreateLoanDto {
 
   @IsOptional()
   @IsString()
-  mortgageContractNumber?: string;
+  mortgageContractNumber?: string | null;
 
   @IsOptional()
   @IsString()
-  committeeNotarizationDate?: string;
+  committeeNotarizationDate?: string | null;
 
   @IsOptional()
   @IsString()
-  mortgageContractTermDate?: string;
+  mortgageContractTermDate?: string | null;
+
+  @IsOptional()
+  @IsString()
+  valuationDate?: string | null;
+
+  @IsOptional()
+  @IsEnum(ValuationType, {
+    message: 'Loại định giá phải là QUY_DINH_QUY hoặc THI_TRUONG',
+  })
+  valuationType?: ValuationType | null;
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateCollateralAssetDto)
   collateralAssets?: CreateCollateralAssetDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateCollateralValuationItemDto)
+  valuationItems?: CreateCollateralValuationItemDto[];
 
   @IsOptional()
   @IsArray()

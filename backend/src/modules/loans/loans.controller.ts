@@ -38,6 +38,11 @@ export class LoansController {
     return this.loansService.previewCalculation(dto);
   }
 
+  @Get('dashboard-summary')
+  getDashboardSummary(@CurrentOfficer('id') officerId: string) {
+    return this.loansService.getDashboardSummary(officerId);
+  }
+
   @Get()
   findAll(
     @CurrentOfficer('id') officerId: string,

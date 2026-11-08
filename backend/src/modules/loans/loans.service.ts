@@ -7,8 +7,10 @@ import {
 import {
   CollateralOwnerType,
   LoanPlanItemType,
+  LoanStatus,
   LoanType,
   Prisma,
+  ValuationType,
 } from '@prisma/client';
 import {
   HOUSEHOLD_OWNER_TYPES,
@@ -29,6 +31,7 @@ import { InterestRatesService } from '../interest-rates/interest-rates.service.j
 import { TerritoriesService } from '../territories/territories.service.js';
 import {
   CreateCollateralAssetDto,
+  CreateCollateralValuationItemDto,
   CreateHouseholdMemberDto,
   CreateLoanDto,
   CreateLoanPlanDto,
@@ -67,8 +70,16 @@ const LOAN_FULL_INCLUDE = {
           },
         },
       },
+      commune: {
+        include: {
+          territoryGroup: true,
+        },
+      },
     },
     orderBy: { createdAt: 'asc' as const },
+  },
+  valuationItems: {
+    orderBy: { sortOrder: 'asc' as const },
   },
   relatedPersons: {
     orderBy: { createdAt: 'asc' as const },
@@ -95,11 +106,16 @@ export class LoansService {
   ) {}
 
   private async assertIndentureUnique(
-    indentureNumber: string,
+    indentureNumber: string | null | undefined,
     excludeLoanId?: string,
   ): Promise<void> {
+    const trimmed = indentureNumber?.trim();
+    if (!trimmed) {
+      return;
+    }
+
     const existing = await this.prisma.loan.findUnique({
-      where: { indentureNumber: indentureNumber.trim() },
+      where: { indentureNumber: trimmed },
       select: { id: true, indentureNumber: true },
     });
 
@@ -111,36 +127,54 @@ export class LoansService {
   }
 
   /**
-   * Chuẩn hóa và kiểm tra danh sách Tài sản thế chấp:
-   * - Tự động lấy địa chỉ thửa đất từ danh sách địa bàn (hamletId -> Ấp, Xã, Tỉnh Vĩnh Long)
-   * - Tự động tính định giá tài sản và làm tròn xuống hàng triệu
+   * Chuẩn hóa và kiểm tra danh sách Tài sản bảo đảm (dùng cho cả Tín chấp và Thế chấp):
+   * - Tự động lấy địa chỉ thửa đất từ danh sách địa bàn cấp Ấp (hamletId) hoặc cấp Xã (communeId)
+   * - Các trường hình thức sử dụng, mục đích sử dụng, nguồn gốc sử dụng, hạn chế sử dụng là tùy chọn
    */
   private async prepareCollateralAssets(
     officerId: string,
     assetsDto: CreateCollateralAssetDto[],
     hasHeir: boolean,
   ): Promise<{
-    totalValuation: number;
     hasHouseholdAsset: boolean;
     assetsCreateInput: Prisma.CollateralAssetUncheckedCreateWithoutLoanInput[];
   }> {
-    const hamletAddressMap =
-      await this.territoriesService.resolveMultipleHamletsForOfficer(
-        officerId,
-        assetsDto.map((a) => a.hamletId),
-      );
+    const hamletIds = assetsDto
+      .map((a) => a.hamletId?.trim())
+      .filter((id): id is string => Boolean(id));
+    const communeIds = assetsDto
+      .map((a) => a.communeId?.trim())
+      .filter((id): id is string => Boolean(id));
 
-    let totalValuation = 0;
+    const [hamletAddressMap, communeAddressMap] = await Promise.all([
+      this.territoriesService.resolveMultipleHamletsForOfficer(
+        officerId,
+        hamletIds,
+      ),
+      this.territoriesService.resolveMultipleCommunesForOfficer(
+        officerId,
+        communeIds,
+      ),
+    ]);
+
     let hasHouseholdAsset = false;
 
     const assetsCreateInput: Prisma.CollateralAssetUncheckedCreateWithoutLoanInput[] =
       assetsDto.map((asset, index) => {
-        const assetLabel = `Tài sản thế chấp #${index + 1} (${asset.assetCode})`;
-        const formattedAddress = hamletAddressMap.get(asset.hamletId);
+        const assetLabel = `Tài sản bảo đảm #${index + 1} (${asset.assetCode})`;
+        const hamletId = asset.hamletId?.trim() || null;
+        const communeId = asset.communeId?.trim() || null;
+
+        let formattedAddress: string | undefined;
+        if (hamletId) {
+          formattedAddress = hamletAddressMap.get(hamletId);
+        } else if (communeId) {
+          formattedAddress = communeAddressMap.get(communeId);
+        }
 
         if (!formattedAddress) {
           throw new BadRequestException(
-            `Địa bàn (hamletId) của ${assetLabel} không hợp lệ`,
+            `Vui lòng chọn địa bàn (cấp Ấp hoặc cấp Xã) hợp lệ cho ${assetLabel}`,
           );
         }
 
@@ -187,17 +221,9 @@ export class LoansService {
           };
         }
 
-        const valuation = calculateCollateralAssetValuation({
-          area: asset.area,
-          valuationType: asset.valuationType,
-          fundLandCategory: asset.fundLandCategory,
-          unitPrice: asset.unitPrice,
-        });
-
-        totalValuation += valuation.valuationAmount;
-
         return {
-          hamletId: asset.hamletId,
+          hamletId,
+          communeId: hamletId ? null : communeId,
           assetType: asset.assetType,
           assetCode: asset.assetCode.trim(),
           certificateType: asset.certificateType,
@@ -206,24 +232,96 @@ export class LoansService {
           mapSheetNumber: asset.mapSheetNumber.trim(),
           address: formattedAddress,
           area: asset.area,
-          usageForm: asset.usageForm.trim(),
-          usagePurpose: asset.usagePurpose.trim(),
+          usageForm: asset.usageForm?.trim() || null,
+          usagePurpose: asset.usagePurpose?.trim() || null,
           usageTerm: asset.usageTerm.trim(),
-          usageOrigin: asset.usageOrigin.trim(),
-          usageRestriction: asset.usageRestriction.trim(),
+          usageOrigin: asset.usageOrigin?.trim() || null,
+          usageRestriction: asset.usageRestriction?.trim() || null,
           ownerType: asset.ownerType,
-          valuationType: asset.valuationType,
+          valuationType: asset.valuationType ?? null,
           fundLandCategory: asset.fundLandCategory ?? null,
-          unitPrice: valuation.unitPrice,
-          valuationAmount: valuation.valuationAmount,
+          unitPrice: asset.unitPrice ?? null,
+          valuationAmount: null,
           ...(guarantorCreate ? { guarantor: guarantorCreate } : {}),
         };
       });
 
     return {
-      totalValuation,
       hasHouseholdAsset,
       assetsCreateInput,
+    };
+  }
+
+  /**
+   * Chuẩn hóa Bảng Định giá Tài sản Thế chấp (Section riêng khi vay Thế chấp):
+   * - Lấy diện tích thực tế định giá (actualArea) nếu có nhập, ngược lại lấy diện tích (area) nhân với đơn giá
+   * - Làm tròn xuống hàng triệu
+   */
+  private prepareValuationItems(
+    valuationType: ValuationType,
+    valuationItemsDto: CreateCollateralValuationItemDto[],
+    fallbackAssetsDto: CreateCollateralAssetDto[],
+  ): {
+    totalValuation: number;
+    valuationItemsCreateInput: Prisma.CollateralValuationItemCreateWithoutLoanInput[];
+  } {
+    const effectiveItems: CreateCollateralValuationItemDto[] =
+      valuationItemsDto.length > 0
+        ? valuationItemsDto
+        : fallbackAssetsDto.map((a) => ({
+            plotNumber: a.plotNumber,
+            mapSheetNumber: a.mapSheetNumber,
+            area: a.area,
+            actualArea: null,
+            fundLandCategory: a.fundLandCategory ?? null,
+            unitPrice: a.unitPrice ?? null,
+            note: null,
+          }));
+
+    if (effectiveItems.length === 0) {
+      throw new BadRequestException(
+        'Khoản vay Thế chấp bắt buộc phải có ít nhất 1 dòng trong bảng Định giá tài sản',
+      );
+    }
+
+    let totalValuation = 0;
+
+    const valuationItemsCreateInput: Prisma.CollateralValuationItemCreateWithoutLoanInput[] =
+      effectiveItems.map((item, idx) => {
+        const calc = calculateCollateralAssetValuation({
+          area: item.area,
+          actualArea: item.actualArea,
+          valuationType,
+          fundLandCategory: item.fundLandCategory,
+          unitPrice: item.unitPrice,
+        });
+
+        totalValuation += calc.valuationAmount;
+
+        return {
+          plotNumber: item.plotNumber.trim(),
+          mapSheetNumber: item.mapSheetNumber.trim(),
+          area: item.area,
+          actualArea:
+            item.actualArea !== undefined &&
+            item.actualArea !== null &&
+            item.actualArea > 0
+              ? item.actualArea
+              : null,
+          fundLandCategory:
+            valuationType === ValuationType.QUY_DINH_QUY
+              ? (item.fundLandCategory ?? null)
+              : null,
+          unitPrice: calc.unitPrice,
+          valuationAmount: calc.valuationAmount,
+          note: item.note?.trim() || null,
+          sortOrder: idx + 1,
+        };
+      });
+
+    return {
+      totalValuation,
+      valuationItemsCreateInput,
     };
   }
 
@@ -286,6 +384,7 @@ export class LoansService {
   ): Prisma.LoanPlanCreateWithoutLoanInput {
     const fundLoanCapital = planDto.fundLoanCapital ?? loanAmount;
     const summary = calculateLoanPlanSummary({
+      totalCapitalNeed: planDto.totalCapitalNeed,
       expenses: planDto.expenses,
       revenues: planDto.revenues,
       fundLoanCapital,
@@ -323,10 +422,15 @@ export class LoansService {
     officerId: string;
     loanType: LoanType;
     loanAmount: number;
+    loanDate: Date;
+    indentureNumber?: string | null;
     mortgageContractNumber?: string | null;
     committeeNotarizationDate?: string | null;
     mortgageContractTermDate?: string | null;
+    valuationDate?: string | null;
+    valuationType?: ValuationType | null;
     collateralAssets?: CreateCollateralAssetDto[];
+    valuationItems?: CreateCollateralValuationItemDto[];
     relatedPersons?: CreateRelatedPersonDto[];
     householdMembers?: CreateHouseholdMemberDto[];
     hasHeir: boolean;
@@ -335,14 +439,31 @@ export class LoansService {
       officerId,
       loanType,
       loanAmount,
+      loanDate,
+      indentureNumber,
       mortgageContractNumber,
       committeeNotarizationDate,
       mortgageContractTermDate,
+      valuationDate,
+      valuationType,
       collateralAssets = [],
+      valuationItems = [],
       relatedPersons = [],
       householdMembers = [],
       hasHeir,
     } = params;
+
+    if (collateralAssets.length === 0) {
+      throw new BadRequestException(
+        'Khoản vay bắt buộc phải có ít nhất 1 Tài sản bảo đảm (Quyền sử dụng đất)',
+      );
+    }
+
+    const { assetsCreateInput } = await this.prepareCollateralAssets(
+      officerId,
+      collateralAssets,
+      hasHeir,
+    );
 
     if (loanType === LoanType.TIN_CHAP) {
       const maxAllowedLoanAmount = calculateMaxLoanLimit(LoanType.TIN_CHAP);
@@ -353,13 +474,17 @@ export class LoansService {
       }
 
       return {
+        indentureNumber: indentureNumber?.trim() || null,
         mortgageContractNumber: null,
         committeeNotarizationDate: null,
         mortgageContractTermDate: null,
+        valuationDate: null,
+        valuationType: null,
         totalCollateralValuation: null,
         maxAllowedLoanAmount,
-        assetsCreateInput:
-          [] as Prisma.CollateralAssetUncheckedCreateWithoutLoanInput[],
+        assetsCreateInput,
+        valuationItemsCreateInput:
+          [] as Prisma.CollateralValuationItemCreateWithoutLoanInput[],
         relatedPersonsCreateInput:
           [] as Prisma.RelatedPersonCreateWithoutLoanInput[],
         householdMembersCreateInput:
@@ -367,29 +492,29 @@ export class LoansService {
       };
     }
 
+    // Với loại vay Thế chấp: Số khế ước và Số hợp đồng thế chấp là bắt buộc, Ngày chứng thực ủy ban là tùy chọn
+    if (!indentureNumber?.trim()) {
+      throw new BadRequestException(
+        'Khoản vay Thế chấp bắt buộc phải có Số khế ước',
+      );
+    }
     if (!mortgageContractNumber?.trim()) {
       throw new BadRequestException(
         'Khoản vay Thế chấp bắt buộc phải có Số hợp đồng thế chấp',
       );
     }
-    if (!committeeNotarizationDate) {
-      throw new BadRequestException(
-        'Khoản vay Thế chấp bắt buộc phải có Ngày chứng thực ủy ban',
-      );
-    }
-    if (!mortgageContractTermDate) {
-      throw new BadRequestException(
-        'Khoản vay Thế chấp bắt buộc phải có Thời hạn hợp đồng thế chấp',
-      );
-    }
-    if (collateralAssets.length === 0) {
-      throw new BadRequestException(
-        'Khoản vay Thế chấp bắt buộc phải có ít nhất 1 Tài sản thế chấp (Quyền sử dụng đất)',
-      );
-    }
 
-    const { totalValuation, assetsCreateInput } =
-      await this.prepareCollateralAssets(officerId, collateralAssets, hasHeir);
+    const resolvedValuationType = valuationType ?? ValuationType.QUY_DINH_QUY;
+    const resolvedValuationDate = valuationDate?.trim()
+      ? parseDateInput(valuationDate, 'Ngày định giá')
+      : loanDate;
+
+    const { totalValuation, valuationItemsCreateInput } =
+      this.prepareValuationItems(
+        resolvedValuationType,
+        valuationItems,
+        collateralAssets,
+      );
 
     const maxAllowedLoanAmount = calculateMaxLoanLimit(
       LoanType.THE_CHAP,
@@ -417,18 +542,23 @@ export class LoansService {
       this.prepareHouseholdMembers(householdMembers);
 
     return {
+      indentureNumber: indentureNumber.trim(),
       mortgageContractNumber: mortgageContractNumber.trim(),
-      committeeNotarizationDate: parseDateInput(
-        committeeNotarizationDate,
-        'Ngày chứng thực ủy ban',
-      ),
-      mortgageContractTermDate: parseDateInput(
-        mortgageContractTermDate,
-        'Thời hạn hợp đồng thế chấp',
-      ),
+      committeeNotarizationDate: committeeNotarizationDate?.trim()
+        ? parseDateInput(committeeNotarizationDate, 'Ngày chứng thực ủy ban')
+        : null,
+      mortgageContractTermDate: mortgageContractTermDate?.trim()
+        ? parseDateInput(
+            mortgageContractTermDate,
+            'Thời hạn hợp đồng thế chấp',
+          )
+        : null,
+      valuationDate: resolvedValuationDate,
+      valuationType: resolvedValuationType,
       totalCollateralValuation: totalValuation,
       maxAllowedLoanAmount,
       assetsCreateInput,
+      valuationItemsCreateInput,
       relatedPersonsCreateInput,
       householdMembersCreateInput,
     };
@@ -471,8 +601,13 @@ export class LoansService {
     }
 
     const loanDate = parseDateInput(dto.loanDate, 'Ngày vay');
+    const status = dto.status ?? LoanStatus.DANG_CHUAN_BI_HO_SO;
+    const disbursementInput =
+      dto.disbursementDate?.trim() ||
+      (status === LoanStatus.DA_GIAI_NGAN ? new Date() : null);
+
     const { disbursementDate, durationMonths, dueDate } =
-      calculateLoanTermAndDueDate(dto.disbursementDate, dto.durationType);
+      calculateLoanTermAndDueDate(disbursementInput, dto.durationType);
 
     const interestRate = await this.interestRatesService.resolveInterestRate({
       loanType: dto.loanType,
@@ -485,10 +620,15 @@ export class LoansService {
       officerId,
       loanType: dto.loanType,
       loanAmount: dto.loanAmount,
+      loanDate,
+      indentureNumber: dto.indentureNumber,
       mortgageContractNumber: dto.mortgageContractNumber,
       committeeNotarizationDate: dto.committeeNotarizationDate,
       mortgageContractTermDate: dto.mortgageContractTermDate,
+      valuationDate: dto.valuationDate,
+      valuationType: dto.valuationType,
       collateralAssets: dto.collateralAssets,
+      valuationItems: dto.valuationItems,
       relatedPersons: dto.relatedPersons,
       householdMembers: dto.householdMembers,
       hasHeir,
@@ -516,20 +656,27 @@ export class LoansService {
           loanDate,
           disbursementDate,
           loanAmount: dto.loanAmount,
-          indentureNumber: dto.indentureNumber.trim(),
+          indentureNumber: relations.indentureNumber,
           loanType: dto.loanType,
           durationType: dto.durationType,
           durationMonths,
           interestRate,
           dueDate,
+          status,
           mortgageContractNumber: relations.mortgageContractNumber,
           committeeNotarizationDate: relations.committeeNotarizationDate,
           mortgageContractTermDate: relations.mortgageContractTermDate,
+          valuationDate: relations.valuationDate,
+          valuationType: relations.valuationType,
           totalCollateralValuation: relations.totalCollateralValuation,
           maxAllowedLoanAmount: relations.maxAllowedLoanAmount,
           collateralAssets:
             relations.assetsCreateInput.length > 0
               ? { create: relations.assetsCreateInput }
+              : undefined,
+          valuationItems:
+            relations.valuationItemsCreateInput.length > 0
+              ? { create: relations.valuationItemsCreateInput }
               : undefined,
           relatedPersons:
             relations.relatedPersonsCreateInput.length > 0
@@ -562,6 +709,7 @@ export class LoansService {
       ...(query.borrowerId ? { borrowerId: query.borrowerId } : {}),
       ...(query.loanType ? { loanType: query.loanType } : {}),
       ...(query.durationType ? { durationType: query.durationType } : {}),
+      ...(query.status ? { status: query.status } : {}),
       ...(query.hamletId
         ? { borrower: { hamletId: query.hamletId } }
         : {}),
@@ -641,15 +789,18 @@ export class LoansService {
   async update(officerId: string, id: string, dto: UpdateLoanDto) {
     const existing = await this.findOne(officerId, id);
 
-    if (
-      dto.indentureNumber &&
-      dto.indentureNumber.trim() !== existing.indentureNumber
-    ) {
-      await this.assertIndentureUnique(dto.indentureNumber, id);
+    const nextIndenture =
+      dto.indentureNumber !== undefined
+        ? dto.indentureNumber?.trim() || null
+        : existing.indentureNumber;
+
+    if (nextIndenture && nextIndenture !== existing.indentureNumber) {
+      await this.assertIndentureUnique(nextIndenture, id);
     }
 
     const nextLoanType = dto.loanType ?? existing.loanType;
     const nextDurationType = dto.durationType ?? existing.durationType;
+    const nextStatus = dto.status ?? existing.status;
     const nextLoanAmount =
       dto.loanAmount !== undefined
         ? dto.loanAmount
@@ -657,8 +808,21 @@ export class LoansService {
     const nextLoanDate = dto.loanDate
       ? parseDateInput(dto.loanDate, 'Ngày vay')
       : existing.loanDate;
-    const nextDisbursementInput =
-      dto.disbursementDate ?? existing.disbursementDate;
+
+    let nextDisbursementInput: string | Date | null | undefined;
+    if (dto.disbursementDate !== undefined) {
+      const trimmed = dto.disbursementDate?.trim();
+      nextDisbursementInput =
+        trimmed ||
+        (nextStatus === LoanStatus.DA_GIAI_NGAN ? new Date() : null);
+    } else if (
+      nextStatus === LoanStatus.DA_GIAI_NGAN &&
+      !existing.disbursementDate
+    ) {
+      nextDisbursementInput = new Date();
+    } else {
+      nextDisbursementInput = existing.disbursementDate;
+    }
 
     const { disbursementDate, durationMonths, dueDate } =
       calculateLoanTermAndDueDate(nextDisbursementInput, nextDurationType);
@@ -676,7 +840,11 @@ export class LoansService {
     const hasRelationChanges =
       dto.loanType !== undefined ||
       dto.loanAmount !== undefined ||
+      dto.indentureNumber !== undefined ||
       dto.collateralAssets !== undefined ||
+      dto.valuationItems !== undefined ||
+      dto.valuationDate !== undefined ||
+      dto.valuationType !== undefined ||
       dto.relatedPersons !== undefined ||
       dto.householdMembers !== undefined ||
       dto.mortgageContractNumber !== undefined ||
@@ -695,17 +863,18 @@ export class LoansService {
           certificateNumber: a.certificateNumber,
           plotNumber: a.plotNumber,
           mapSheetNumber: a.mapSheetNumber,
-          hamletId: a.hamletId,
+          hamletId: a.hamletId ?? null,
+          communeId: a.communeId ?? null,
           area: Number(a.area),
-          usageForm: a.usageForm,
-          usagePurpose: a.usagePurpose,
+          usageForm: a.usageForm ?? null,
+          usagePurpose: a.usagePurpose ?? null,
           usageTerm: a.usageTerm,
-          usageOrigin: a.usageOrigin,
-          usageRestriction: a.usageRestriction,
+          usageOrigin: a.usageOrigin ?? null,
+          usageRestriction: a.usageRestriction ?? null,
           ownerType: a.ownerType,
-          valuationType: a.valuationType,
+          valuationType: a.valuationType ?? undefined,
           fundLandCategory: a.fundLandCategory ?? undefined,
-          unitPrice: Number(a.unitPrice),
+          unitPrice: a.unitPrice !== null ? Number(a.unitPrice) : undefined,
           guarantor: a.guarantor
             ? {
                 fullName: a.guarantor.fullName,
@@ -716,6 +885,18 @@ export class LoansService {
                 address: a.guarantor.address,
               }
             : undefined,
+        }));
+
+      const valuationItemsToValidate: CreateCollateralValuationItemDto[] =
+        dto.valuationItems ??
+        existing.valuationItems.map((vi) => ({
+          plotNumber: vi.plotNumber,
+          mapSheetNumber: vi.mapSheetNumber,
+          area: Number(vi.area),
+          actualArea: vi.actualArea !== null ? Number(vi.actualArea) : null,
+          fundLandCategory: vi.fundLandCategory ?? null,
+          unitPrice: Number(vi.unitPrice),
+          note: vi.note ?? null,
         }));
 
       const relatedPersonsToValidate: CreateRelatedPersonDto[] =
@@ -751,6 +932,8 @@ export class LoansService {
         officerId,
         loanType: nextLoanType,
         loanAmount: nextLoanAmount,
+        loanDate: nextLoanDate,
+        indentureNumber: nextIndenture,
         mortgageContractNumber:
           dto.mortgageContractNumber !== undefined
             ? dto.mortgageContractNumber
@@ -763,16 +946,28 @@ export class LoansService {
           dto.mortgageContractTermDate !== undefined
             ? dto.mortgageContractTermDate
             : existing.mortgageContractTermDate?.toISOString(),
+        valuationDate:
+          dto.valuationDate !== undefined
+            ? dto.valuationDate
+            : existing.valuationDate?.toISOString(),
+        valuationType:
+          dto.valuationType !== undefined
+            ? dto.valuationType
+            : existing.valuationType,
         collateralAssets: collateralAssetsToValidate,
+        valuationItems: valuationItemsToValidate,
         relatedPersons: relatedPersonsToValidate,
         householdMembers: householdMembersToValidate,
         hasHeir: Boolean(existing.borrower.heir),
       });
 
       relationDataUpdate = {
+        indentureNumber: relations.indentureNumber,
         mortgageContractNumber: relations.mortgageContractNumber,
         committeeNotarizationDate: relations.committeeNotarizationDate,
         mortgageContractTermDate: relations.mortgageContractTermDate,
+        valuationDate: relations.valuationDate,
+        valuationType: relations.valuationType,
         totalCollateralValuation: relations.totalCollateralValuation,
         maxAllowedLoanAmount: relations.maxAllowedLoanAmount,
         ...(dto.collateralAssets !== undefined ||
@@ -782,6 +977,18 @@ export class LoansService {
                 deleteMany: {},
                 ...(relations.assetsCreateInput.length > 0
                   ? { create: relations.assetsCreateInput }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(dto.valuationItems !== undefined ||
+        dto.valuationType !== undefined ||
+        nextLoanType === LoanType.TIN_CHAP
+          ? {
+              valuationItems: {
+                deleteMany: {},
+                ...(relations.valuationItemsCreateInput.length > 0
+                  ? { create: relations.valuationItemsCreateInput }
                   : {}),
               },
             }
@@ -828,14 +1035,13 @@ export class LoansService {
         loanDate: nextLoanDate,
         disbursementDate,
         loanAmount: nextLoanAmount,
-        ...(dto.indentureNumber !== undefined
-          ? { indentureNumber: dto.indentureNumber.trim() }
-          : {}),
+        indentureNumber: nextIndenture,
         loanType: nextLoanType,
         durationType: nextDurationType,
         durationMonths,
         interestRate,
         dueDate,
+        status: nextStatus,
         ...relationDataUpdate,
         ...(loanPlanUpdate ? { loanPlan: loanPlanUpdate } : {}),
       },
@@ -847,6 +1053,87 @@ export class LoansService {
     await this.findOne(officerId, id);
     await this.prisma.loan.delete({ where: { id } });
     return { deleted: true, id };
+  }
+
+  /**
+   * Tổng hợp số liệu nhanh cho màn hình Tổng quan của Cán bộ tín dụng
+   */
+  async getDashboardSummary(officerId: string) {
+    const [
+      totalLoans,
+      totalBorrowers,
+      totalGroups,
+      totalCommunes,
+      totalHamlets,
+      loanAggregates,
+      byLoanType,
+      byDurationType,
+      recentLoans,
+    ] = await Promise.all([
+      this.prisma.loan.count({ where: { officerId } }),
+      this.prisma.borrower.count({ where: { officerId } }),
+      this.prisma.territoryGroup.count({ where: { officerId } }),
+      this.prisma.commune.count({ where: { officerId } }),
+      this.prisma.hamlet.count({ where: { officerId } }),
+      this.prisma.loan.aggregate({
+        where: { officerId },
+        _sum: {
+          loanAmount: true,
+          totalCollateralValuation: true,
+        },
+      }),
+      this.prisma.loan.groupBy({
+        by: ['loanType'],
+        where: { officerId },
+        _count: { _all: true },
+        _sum: { loanAmount: true },
+      }),
+      this.prisma.loan.groupBy({
+        by: ['durationType'],
+        where: { officerId },
+        _count: { _all: true },
+        _sum: { loanAmount: true },
+      }),
+      this.prisma.loan.findMany({
+        where: { officerId },
+        include: {
+          borrower: {
+            select: {
+              id: true,
+              fullName: true,
+              idNumber: true,
+              address: true,
+              memberCode: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 8,
+      }),
+    ]);
+
+    return {
+      totalLoans,
+      totalBorrowers,
+      totalGroups,
+      totalCommunes,
+      totalHamlets,
+      totalLoanAmount: Number(loanAggregates._sum.loanAmount ?? 0),
+      totalCollateralValuation: Number(
+        loanAggregates._sum.totalCollateralValuation ?? 0,
+      ),
+      byLoanType: byLoanType.map((item) => ({
+        loanType: item.loanType,
+        count: item._count._all,
+        amount: Number(item._sum.loanAmount ?? 0),
+      })),
+      byDurationType: byDurationType.map((item) => ({
+        durationType: item.durationType,
+        count: item._count._all,
+        amount: Number(item._sum.loanAmount ?? 0),
+      })),
+      recentLoans,
+    };
   }
 
   async previewCalculation(dto: PreviewLoanCalculationDto) {
@@ -862,6 +1149,7 @@ export class LoansService {
     const assetValuations = (dto.collateralAssets ?? []).map((item) =>
       calculateCollateralAssetValuation({
         area: item.area,
+        actualArea: item.actualArea,
         valuationType: item.valuationType,
         fundLandCategory: item.fundLandCategory,
         unitPrice: item.unitPrice,
@@ -883,8 +1171,9 @@ export class LoansService {
       dto.loanAmount >= RELATED_PERSON_MANDATORY_THRESHOLD;
 
     const loanPlanSummary =
-      dto.expenses || dto.revenues
+      dto.expenses || dto.revenues || dto.totalCapitalNeed
         ? calculateLoanPlanSummary({
+            totalCapitalNeed: dto.totalCapitalNeed,
             expenses: dto.expenses ?? [],
             revenues: dto.revenues ?? [],
             fundLoanCapital: dto.loanAmount,

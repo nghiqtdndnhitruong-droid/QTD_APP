@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   DEFAULT_PROVINCE_NAME,
+  formatCommuneAddress,
   formatTerritoryAddress,
 } from '../../common/helpers/index.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -92,6 +93,38 @@ export class TerritoriesService {
         h.id,
         formatTerritoryAddress(h.name, h.commune.name, h.commune.province),
       );
+    }
+    return addressMap;
+  }
+
+  /**
+   * Tra cứu hàng loạt các Xã trong 1 truy vấn duy nhất (hỗ trợ chọn địa bàn cấp Xã cho tài sản thế chấp)
+   */
+  async resolveMultipleCommunesForOfficer(
+    officerId: string,
+    communeIds: string[],
+  ): Promise<Map<string, string>> {
+    const uniqueIds = Array.from(new Set(communeIds));
+    if (uniqueIds.length === 0) {
+      return new Map();
+    }
+
+    const communes = await this.prisma.commune.findMany({
+      where: {
+        id: { in: uniqueIds },
+        officerId,
+      },
+    });
+
+    if (communes.length !== uniqueIds.length) {
+      throw new BadRequestException(
+        'Một hoặc nhiều địa bàn (Xã) không tồn tại hoặc không thuộc quyền quản lý của cán bộ hiện tại',
+      );
+    }
+
+    const addressMap = new Map<string, string>();
+    for (const c of communes) {
+      addressMap.set(c.id, formatCommuneAddress(c.name, c.province));
     }
     return addressMap;
   }
@@ -276,7 +309,7 @@ export class TerritoriesService {
   }
 
   async findAllCommunes(officerId: string) {
-    return this.prisma.commune.findMany({
+    const communes = await this.prisma.commune.findMany({
       where: { officerId },
       include: {
         territoryGroup: true,
@@ -284,6 +317,11 @@ export class TerritoriesService {
       },
       orderBy: { name: 'asc' },
     });
+
+    return communes.map((c) => ({
+      ...c,
+      fullAddress: formatCommuneAddress(c.name, c.province),
+    }));
   }
 
   async updateCommune(officerId: string, id: string, dto: UpdateCommuneDto) {

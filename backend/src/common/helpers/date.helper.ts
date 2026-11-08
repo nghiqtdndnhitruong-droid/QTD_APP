@@ -96,20 +96,16 @@ export function addMonthsUTC(date: Date, months: number): Date {
 
 /**
  * Tính Thời hạn vay (số tháng mặc định: Ngắn hạn = 12 tháng, Trung hạn = 24 tháng)
- * và Ngày tới hạn trả tính từ Ngày giải ngân.
+ * và Ngày tới hạn trả tính từ Ngày giải ngân (nếu đã có Ngày giải ngân)
  */
 export function calculateLoanTermAndDueDate(
-  disbursementDateInput: string | Date,
+  disbursementDateInput: string | Date | null | undefined,
   durationType: LoanDurationType,
 ): {
-  disbursementDate: Date;
+  disbursementDate: Date | null;
   durationMonths: number;
-  dueDate: Date;
+  dueDate: Date | null;
 } {
-  const disbursementDate = parseDateInput(
-    disbursementDateInput,
-    'Ngày giải ngân',
-  );
   const durationMonths = DEFAULT_LOAN_DURATION_MONTHS[durationType];
 
   if (!durationMonths) {
@@ -118,6 +114,23 @@ export function calculateLoanTermAndDueDate(
     );
   }
 
+  const hasDisbursement =
+    disbursementDateInput instanceof Date ||
+    (typeof disbursementDateInput === 'string' &&
+      disbursementDateInput.trim().length > 0);
+
+  if (!hasDisbursement) {
+    return {
+      disbursementDate: null,
+      durationMonths,
+      dueDate: null,
+    };
+  }
+
+  const disbursementDate = parseDateInput(
+    disbursementDateInput!,
+    'Ngày giải ngân',
+  );
   const dueDate = addMonthsUTC(disbursementDate, durationMonths);
 
   return {

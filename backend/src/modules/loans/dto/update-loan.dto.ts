@@ -1,6 +1,7 @@
 import {
   FundLandCategory,
   LoanDurationType,
+  LoanStatus,
   LoanType,
   ValuationType,
 } from '@prisma/client';
@@ -8,7 +9,9 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsIn,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -19,6 +22,7 @@ import {
 } from 'class-validator';
 import {
   CreateCollateralAssetDto,
+  CreateCollateralValuationItemDto,
   CreateHouseholdMemberDto,
   CreateLoanPlanDto,
   CreateLoanPlanItemDto,
@@ -32,7 +36,7 @@ export class UpdateLoanDto {
 
   @IsOptional()
   @IsString()
-  disbursementDate?: string;
+  disbursementDate?: string | null;
 
   @IsOptional()
   @Type(() => Number)
@@ -42,7 +46,7 @@ export class UpdateLoanDto {
 
   @IsOptional()
   @IsString()
-  indentureNumber?: string;
+  indentureNumber?: string | null;
 
   @IsOptional()
   @IsEnum(LoanType)
@@ -51,6 +55,10 @@ export class UpdateLoanDto {
   @IsOptional()
   @IsEnum(LoanDurationType)
   durationType?: LoanDurationType;
+
+  @IsOptional()
+  @IsEnum(LoanStatus)
+  status?: LoanStatus;
 
   @IsOptional()
   @Type(() => Number)
@@ -71,10 +79,24 @@ export class UpdateLoanDto {
   mortgageContractTermDate?: string | null;
 
   @IsOptional()
+  @IsString()
+  valuationDate?: string | null;
+
+  @IsOptional()
+  @IsEnum(ValuationType)
+  valuationType?: ValuationType | null;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateCollateralAssetDto)
   collateralAssets?: CreateCollateralAssetDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateCollateralValuationItemDto)
+  valuationItems?: CreateCollateralValuationItemDto[];
 
   @IsOptional()
   @IsArray()
@@ -124,6 +146,10 @@ export class QueryLoanDto {
   durationType?: LoanDurationType;
 
   @IsOptional()
+  @IsEnum(LoanStatus)
+  status?: LoanStatus;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
@@ -142,6 +168,12 @@ export class PreviewValuationItemDto {
   @IsNumber()
   @Min(0.01)
   area: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.01)
+  actualArea?: number | null;
 
   @IsEnum(ValuationType)
   valuationType: ValuationType;
@@ -169,8 +201,15 @@ export class PreviewLoanCalculationDto {
   @Min(1)
   loanAmount: number;
 
+  @IsOptional()
   @IsString()
-  disbursementDate: string;
+  disbursementDate?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  totalCapitalNeed?: number;
 
   @IsOptional()
   @IsArray()

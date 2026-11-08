@@ -6,6 +6,7 @@ export interface LoanPlanLineItemInput {
 }
 
 export interface LoanPlanCalculationInput {
+  totalCapitalNeed?: number;
   expenses: LoanPlanLineItemInput[];
   revenues: LoanPlanLineItemInput[];
   fundLoanCapital: number;
@@ -13,6 +14,7 @@ export interface LoanPlanCalculationInput {
 
 export interface LoanPlanCalculationResult {
   totalCapitalNeed: number;
+  totalExpenses: number;
   fundLoanCapital: number;
   ownCapital: number;
   totalRevenue: number;
@@ -21,15 +23,16 @@ export interface LoanPlanCalculationResult {
 
 /**
  * Tính toán các chỉ tiêu tài chính của Phương án vay vốn:
- * - Tổng nhu cầu vốn = Tổng các khoản chi phí (tiền lãi vay đã nằm trong danh sách chi phí)
+ * - Tổng nhu cầu vốn: do cán bộ tự nhập (nếu không nhập mới mặc định lấy tổng chi phí)
  * - Vốn tự có = Tổng nhu cầu vốn - Vốn vay quỹ
+ * - Tổng chi phí = Tổng các khoản chi phí do cán bộ nhập
  * - Tổng nguồn thu = Tổng các khoản nguồn thu
- * - Lợi nhuận = Tổng nguồn thu - Tổng nhu cầu vốn (tổng chi phí)
+ * - Lợi nhuận = Tổng nguồn thu - Tổng chi phí
  */
 export function calculateLoanPlanSummary(
   input: LoanPlanCalculationInput,
 ): LoanPlanCalculationResult {
-  const totalCapitalNeed = (input.expenses ?? []).reduce((sum, item) => {
+  const totalExpenses = (input.expenses ?? []).reduce((sum, item) => {
     if (!Number.isFinite(item.amount) || item.amount < 0) {
       throw new BadRequestException(
         `Số tiền chi phí "${item.itemName}" không hợp lệ`,
@@ -46,6 +49,14 @@ export function calculateLoanPlanSummary(
     }
     return sum + item.amount;
   }, 0);
+
+  const totalCapitalNeed =
+    input.totalCapitalNeed !== undefined &&
+    input.totalCapitalNeed !== null &&
+    Number.isFinite(input.totalCapitalNeed) &&
+    input.totalCapitalNeed > 0
+      ? input.totalCapitalNeed
+      : totalExpenses;
 
   if (
     !Number.isFinite(input.fundLoanCapital) ||
@@ -64,10 +75,11 @@ export function calculateLoanPlanSummary(
   }
 
   const ownCapital = Math.max(0, totalCapitalNeed - input.fundLoanCapital);
-  const profit = totalRevenue - totalCapitalNeed;
+  const profit = totalRevenue - totalExpenses;
 
   return {
     totalCapitalNeed,
+    totalExpenses,
     fundLoanCapital: input.fundLoanCapital,
     ownCapital,
     totalRevenue,

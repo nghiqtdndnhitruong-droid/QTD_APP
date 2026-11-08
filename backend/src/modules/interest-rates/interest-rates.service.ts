@@ -4,17 +4,224 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InterestRateTier, LoanDurationType, LoanType } from '@prisma/client';
+import { parseDateInput } from '../../common/helpers/index.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
-import { CreateInterestRateTierDto } from './dto/create-interest-rate-tier.dto.js';
+import {
+  CreateInterestRateBatchDto,
+  CreateInterestRateTierDto,
+} from './dto/create-interest-rate-tier.dto.js';
 import {
   LookupInterestRateDto,
   QueryInterestRateTierDto,
+  UpdateInterestRateBatchDto,
   UpdateInterestRateTierDto,
 } from './dto/update-interest-rate-tier.dto.js';
 
 @Injectable()
 export class InterestRatesService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // ==========================================
+  // QUẢN LÝ ĐỢT BAN HÀNH LÃI SUẤT (BATCH)
+  // ==========================================
+
+  async createBatch(dto: CreateInterestRateBatchDto) {
+    const effectiveDate = parseDateInput(
+      dto.effectiveDate,
+      'Thời gian ban hành',
+    );
+
+    const existingAppliedCount = await this.prisma.interestRateBatch.count({
+      where: { isApplied: true },
+    });
+    const shouldApply =
+      dto.isApplied !== undefined ? dto.isApplied : existingAppliedCount === 0;
+
+    return this.prisma.$transaction(async (tx) => {
+      if (shouldApply) {
+        await tx.interestRateBatch.updateMany({
+          data: { isApplied: false },
+        });
+        await tx.interestRateTier.updateMany({
+          data: { isActive: false },
+        });
+      }
+
+      return tx.interestRateBatch.create({
+        data: {
+          effectiveDate,
+          documentNote: dto.documentNote?.trim() || null,
+          isApplied: shouldApply,
+          tiers: {
+            create: dto.tiers.map((tier) => ({
+              loanType: tier.loanType,
+              durationType: tier.durationType,
+              minAmount: tier.minAmount,
+              maxAmount: tier.maxAmount ?? null,
+              interestRate: tier.interestRate,
+              description: tier.description?.trim() || null,
+              isActive: shouldApply,
+            })),
+          },
+        },
+        include: {
+          tiers: {
+            orderBy: [
+              { loanType: 'asc' },
+              { durationType: 'asc' },
+              { minAmount: 'asc' },
+            ],
+          },
+        },
+      });
+    });
+  }
+
+  async findAllBatches() {
+    return this.prisma.interestRateBatch.findMany({
+      include: {
+        tiers: {
+          orderBy: [
+            { loanType: 'asc' },
+            { durationType: 'asc' },
+            { minAmount: 'asc' },
+          ],
+        },
+      },
+      orderBy: [{ effectiveDate: 'desc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  async findOneBatch(id: string) {
+    const batch = await this.prisma.interestRateBatch.findUnique({
+      where: { id },
+      include: {
+        tiers: {
+          orderBy: [
+            { loanType: 'asc' },
+            { durationType: 'asc' },
+            { minAmount: 'asc' },
+          ],
+        },
+      },
+    });
+    if (!batch) {
+      throw new NotFoundException(
+        `Không tìm thấy đợt ban hành lãi suất với ID: ${id}`,
+      );
+    }
+    return batch;
+  }
+
+  async updateBatch(id: string, dto: UpdateInterestRateBatchDto) {
+    const existing = await this.findOneBatch(id);
+    const effectiveDate = dto.effectiveDate
+      ? parseDateInput(dto.effectiveDate, 'Thời gian ban hành')
+      : existing.effectiveDate;
+    const shouldApply =
+      dto.isApplied !== undefined ? dto.isApplied : existing.isApplied;
+
+    return this.prisma.$transaction(async (tx) => {
+      if (shouldApply && !existing.isApplied) {
+        await tx.interestRateBatch.updateMany({
+          where: { id: { not: id } },
+          data: { isApplied: false },
+        });
+        await tx.interestRateTier.updateMany({
+          where: { batchId: { not: id } },
+          data: { isActive: false },
+        });
+      }
+
+      if (dto.tiers) {
+        await tx.interestRateTier.deleteMany({
+          where: { batchId: id },
+        });
+      } else if (dto.isApplied !== undefined) {
+        await tx.interestRateTier.updateMany({
+          where: { batchId: id },
+          data: { isActive: shouldApply },
+        });
+      }
+
+      return tx.interestRateBatch.update({
+        where: { id },
+        data: {
+          effectiveDate,
+          ...(dto.documentNote !== undefined
+            ? { documentNote: dto.documentNote?.trim() || null }
+            : {}),
+          isApplied: shouldApply,
+          ...(dto.tiers
+            ? {
+                tiers: {
+                  create: dto.tiers.map((tier) => ({
+                    loanType: tier.loanType,
+                    durationType: tier.durationType,
+                    minAmount: tier.minAmount,
+                    maxAmount: tier.maxAmount ?? null,
+                    interestRate: tier.interestRate,
+                    description: tier.description?.trim() || null,
+                    isActive: shouldApply,
+                  })),
+                },
+              }
+            : {}),
+        },
+        include: {
+          tiers: {
+            orderBy: [
+              { loanType: 'asc' },
+              { durationType: 'asc' },
+              { minAmount: 'asc' },
+            ],
+          },
+        },
+      });
+    });
+  }
+
+  async applyBatch(id: string) {
+    await this.findOneBatch(id);
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.interestRateBatch.updateMany({
+        data: { isApplied: false },
+      });
+      await tx.interestRateTier.updateMany({
+        data: { isActive: false },
+      });
+
+      await tx.interestRateTier.updateMany({
+        where: { batchId: id },
+        data: { isActive: true },
+      });
+
+      return tx.interestRateBatch.update({
+        where: { id },
+        data: { isApplied: true },
+        include: {
+          tiers: {
+            orderBy: [
+              { loanType: 'asc' },
+              { durationType: 'asc' },
+              { minAmount: 'asc' },
+            ],
+          },
+        },
+      });
+    });
+  }
+
+  async removeBatch(id: string) {
+    await this.findOneBatch(id);
+    await this.prisma.interestRateBatch.delete({ where: { id } });
+    return { deleted: true, id };
+  }
+
+  // ==========================================
+  // QUẢN LÝ MỐC LÃI SUẤT ĐƠN LẺ & TRA CỨU
+  // ==========================================
 
   async create(dto: CreateInterestRateTierDto): Promise<InterestRateTier> {
     if (
@@ -67,8 +274,24 @@ export class InterestRatesService {
 
   /**
    * Tra cứu mức lãi suất áp dụng theo Loại vay, Thời hạn vay và Số tiền vay
+   * Ưu tiên đợt ban hành lãi suất đang được áp dụng (isApplied = true)
    */
   async lookupRate(dto: LookupInterestRateDto): Promise<InterestRateTier | null> {
+    const appliedBatchTier = await this.prisma.interestRateTier.findFirst({
+      where: {
+        batch: { isApplied: true },
+        loanType: dto.loanType,
+        durationType: dto.durationType,
+        minAmount: { lte: dto.loanAmount },
+        OR: [{ maxAmount: null }, { maxAmount: { gte: dto.loanAmount } }],
+      },
+      orderBy: { minAmount: 'desc' },
+    });
+
+    if (appliedBatchTier) {
+      return appliedBatchTier;
+    }
+
     return this.prisma.interestRateTier.findFirst({
       where: {
         loanType: dto.loanType,

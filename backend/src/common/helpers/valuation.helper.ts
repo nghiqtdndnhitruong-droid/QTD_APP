@@ -9,12 +9,14 @@ import {
 
 export interface CollateralValuationInput {
   area: number;
+  actualArea?: number | null;
   valuationType: ValuationType;
   fundLandCategory?: FundLandCategory | null;
   unitPrice?: number | null;
 }
 
 export interface CollateralValuationResult {
+  effectiveArea: number;
   unitPrice: number;
   rawValuationAmount: number;
   valuationAmount: number;
@@ -78,10 +80,19 @@ export function calculateCollateralAssetValuation(
     );
   }
 
-  const rawValuationAmount = input.area * resolvedUnitPrice;
+  const effectiveArea =
+    input.actualArea !== undefined &&
+    input.actualArea !== null &&
+    Number.isFinite(input.actualArea) &&
+    input.actualArea > 0
+      ? input.actualArea
+      : input.area;
+
+  const rawValuationAmount = effectiveArea * resolvedUnitPrice;
   const valuationAmount = roundDownToMillion(rawValuationAmount);
 
   return {
+    effectiveArea,
     unitPrice: resolvedUnitPrice,
     rawValuationAmount,
     valuationAmount,

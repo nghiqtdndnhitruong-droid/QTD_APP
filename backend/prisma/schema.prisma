@@ -51,6 +51,14 @@ enum LoanDurationType {
   TRUNG_HAN // Trung hạn (mặc định 24 tháng)
 }
 
+enum LoanStatus {
+  DANG_CHUAN_BI_HO_SO // Đang chuẩn bị hồ sơ
+  DA_HOAN_THANH_HO_SO // Đã hoàn thành hồ sơ
+  DA_GIAI_NGAN        // Đã giải ngân
+  DA_TAT_TOAN         // Đã tất toán
+  QUA_HAN             // Quá hạn
+}
+
 enum CollateralAssetType {
   QSDD               // Quyền sử dụng đất
   QSDD_NHA_O_TAI_SAN // Quyền sử dụng đất quyền sở hữu nhà ở và tài sản khác gắn liền với đất
@@ -146,7 +154,8 @@ model Commune {
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
 
-  hamlets Hamlet[]
+  hamlets          Hamlet[]
+  collateralAssets CollateralAsset[]
 
   @@unique([officerId, name])
   @@index([officerId])
@@ -178,19 +187,38 @@ model Hamlet {
 // MODELS: NGHIỆP VỤ TÍN DỤNG
 // ==========================================
 
+/// Đợt ban hành Biểu lãi suất (kèm Thời gian ban hành, Ghi chú thông tư, và trạng thái Áp dụng)
+model InterestRateBatch {
+  id            String             @id @default(uuid())
+  effectiveDate DateTime           @db.Date // Thời gian ban hành (dd/mm/yyyy)
+  documentNote  String?            // Ghi chú (Số thông tư ban hành)
+  isApplied     Boolean            @default(false) // Đợt lãi suất đang được áp dụng
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  tiers InterestRateTier[]
+
+  @@index([isApplied])
+  @@index([effectiveDate])
+  @@map("interest_rate_batches")
+}
+
 /// Bảng cấu hình các mốc lãi suất theo Loại vay & Thời hạn vay
 model InterestRateTier {
-  id           String           @id @default(uuid())
+  id           String             @id @default(uuid())
+  batchId      String?
+  batch        InterestRateBatch? @relation(fields: [batchId], references: [id], onDelete: Cascade)
   loanType     LoanType
   durationType LoanDurationType
-  minAmount    Decimal          @db.Decimal(18, 0)
-  maxAmount    Decimal?         @db.Decimal(18, 0) // null nếu không giới hạn trên (VD: >= 500tr)
-  interestRate Decimal          @db.Decimal(6, 3)  // Mức lãi suất (%)
+  minAmount    Decimal            @db.Decimal(18, 0)
+  maxAmount    Decimal?           @db.Decimal(18, 0) // null nếu không giới hạn trên (VD: >= 500tr)
+  interestRate Decimal            @db.Decimal(6, 3)  // Mức lãi suất (%)
   description  String?
-  isActive     Boolean          @default(true)
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  isActive     Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
+  @@index([batchId])
   @@index([loanType, durationType, isActive, minAmount])
   @@map("interest_rate_tiers")
 }
@@ -257,23 +285,27 @@ model Loan {
   borrowerId                String
   borrower                  Borrower         @relation(fields: [borrowerId], references: [id], onDelete: Restrict)
   loanDate                  DateTime         @db.Date // Ngày vay (dd/mm/yyyy)
-  disbursementDate          DateTime         @db.Date // Ngày giải ngân (dd/mm/yyyy)
+  disbursementDate          DateTime?        @db.Date // Ngày giải ngân (tùy chọn khi lập hồ sơ)
   loanAmount                Decimal          @db.Decimal(18, 0) // Số tiền vay
-  indentureNumber           String           @unique // Số khế ước
+  indentureNumber           String?          @unique // Số khế ước (tùy chọn với Tín chấp, bắt buộc với Thế chấp)
   loanType                  LoanType         // Tín chấp / Thế chấp
   durationType              LoanDurationType // Ngắn hạn / Trung hạn
   durationMonths            Int              // Mặc định 12 (Ngắn hạn) hoặc 24 (Trung hạn)
   interestRate              Decimal          @db.Decimal(6, 3) // Lãi suất
-  dueDate                   DateTime         @db.Date // Ngày tới hạn trả (tính từ ngày giải ngân)
-  mortgageContractNumber    String?          // Số hợp đồng thế chấp (nếu thế chấp)
-  committeeNotarizationDate DateTime?        @db.Date // Ngày chứng thực ủy ban (nếu thế chấp)
+  dueDate                   DateTime?        @db.Date // Ngày tới hạn trả (tính từ ngày giải ngân)
+  status                    LoanStatus       @default(DANG_CHUAN_BI_HO_SO) // Trạng thái khoản vay
+  mortgageContractNumber    String?          // Số hợp đồng thế chấp (bắt buộc nếu thế chấp)
+  committeeNotarizationDate DateTime?        @db.Date // Ngày chứng thực ủy ban (tùy chọn khi tạo thế chấp, nhập sau trong edit)
   mortgageContractTermDate  DateTime?        @db.Date // Thời hạn hợp đồng thế chấp (nếu thế chấp)
+  valuationDate             DateTime?        @db.Date // Ngày định giá tài sản thế chấp
+  valuationType             ValuationType?   // Loại định giá tài sản thế chấp (QUY_DINH_QUY / THI_TRUONG)
   totalCollateralValuation  Decimal?         @db.Decimal(18, 0) // Tổng giá trị định giá tài sản thế chấp
   maxAllowedLoanAmount      Decimal?         @db.Decimal(18, 0) // Hạn mức tối đa (100tr hoặc 70% tổng định giá)
   createdAt                 DateTime         @default(now())
   updatedAt                 DateTime         @updatedAt
 
   collateralAssets CollateralAsset[]
+  valuationItems   CollateralValuationItem[]
   relatedPersons   RelatedPerson[]
   householdMembers HouseholdMember[]
   loanPlan         LoanPlan?
@@ -281,36 +313,40 @@ model Loan {
   @@index([officerId])
   @@index([borrowerId])
   @@index([loanType, durationType])
+  @@index([status])
+  @@index([dueDate])
   @@index([loanDate])
   @@index([disbursementDate])
   @@map("loans")
 }
 
-/// Tài sản thế chấp (Chỉ nhận Quyền sử dụng đất, địa chỉ lấy từ danh sách địa bàn, có thể khác địa chỉ người vay)
+/// Tài sản thế chấp (Chỉ nhận Quyền sử dụng đất, địa chỉ lấy từ danh sách địa bàn cấp Ấp hoặc cấp Xã)
 model CollateralAsset {
   id                String              @id @default(uuid())
   loanId            String
   loan              Loan                @relation(fields: [loanId], references: [id], onDelete: Cascade)
-  hamletId          String
-  hamlet            Hamlet              @relation(fields: [hamletId], references: [id], onDelete: Restrict)
+  hamletId          String?
+  hamlet            Hamlet?             @relation(fields: [hamletId], references: [id], onDelete: Restrict)
+  communeId         String?
+  commune           Commune?            @relation(fields: [communeId], references: [id], onDelete: Restrict)
   assetType         CollateralAssetType
   assetCode         String              // Mã số tài sản
   certificateType   CertificateType     // Loại giấy chứng nhận
   certificateNumber String              // Số giấy chứng nhận
   plotNumber        String              // Số thửa
   mapSheetNumber    String              // Số tờ
-  address           String              // Tự động ghép từ địa bàn: "Ấp ..., Xã ..., Tỉnh Vĩnh Long"
+  address           String              // Tự động ghép từ địa bàn: "Ấp ..., Xã ..., Tỉnh Vĩnh Long" hoặc "Xã ..., Tỉnh Vĩnh Long"
   area              Decimal             @db.Decimal(14, 2) // Diện tích (m2)
-  usageForm         String              // Hình thức sử dụng
-  usagePurpose      String              // Mục đích sử dụng
+  usageForm         String?             // Hình thức sử dụng (tùy chọn)
+  usagePurpose      String?             // Mục đích sử dụng (tùy chọn)
   usageTerm         String              // Thời hạn sử dụng
-  usageOrigin       String              // Nguồn gốc sử dụng
-  usageRestriction  String              // Hạn chế sử dụng
+  usageOrigin       String?             // Nguồn gốc sử dụng (tùy chọn)
+  usageRestriction  String?             // Hạn chế sử dụng (tùy chọn)
   ownerType         CollateralOwnerType // Chủ sở hữu tài sản
-  valuationType     ValuationType       // Theo quy định Quỹ / Theo giá thị trường
-  fundLandCategory  FundLandCategory?   // Loại đất theo quy định Quỹ (nếu định giá theo Quỹ)
-  unitPrice         Decimal             @db.Decimal(18, 0) // Mức giá / m2
-  valuationAmount   Decimal             @db.Decimal(18, 0) // Định giá tài sản (Diện tích x Mức giá, làm tròn xuống hàng triệu)
+  valuationType     ValuationType?      // Theo quy định Quỹ / Theo giá thị trường
+  fundLandCategory  FundLandCategory?   // Loại đất theo quy định Quỹ
+  unitPrice         Decimal?            @db.Decimal(18, 0) // Mức giá / m2
+  valuationAmount   Decimal?            @db.Decimal(18, 0) // Định giá tài sản
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
@@ -318,7 +354,29 @@ model CollateralAsset {
 
   @@index([loanId])
   @@index([hamletId])
+  @@index([communeId])
   @@map("collateral_assets")
+}
+
+/// Dòng chi tiết trong Bảng Định giá Tài sản Thế chấp (Section riêng khi vay Thế chấp)
+model CollateralValuationItem {
+  id               String            @id @default(uuid())
+  loanId           String
+  loan             Loan              @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  plotNumber       String            // Số thửa
+  mapSheetNumber   String            // Số tờ
+  area             Decimal           @db.Decimal(14, 2) // Diện tích trên sổ (m2)
+  actualArea       Decimal?          @db.Decimal(14, 2) // Diện tích thực tế định giá (tùy chọn)
+  fundLandCategory FundLandCategory? // Loại đất theo quy định Quỹ (nếu định giá theo quy định Quỹ)
+  unitPrice        Decimal           @db.Decimal(18, 0) // Đơn giá / m2
+  valuationAmount  Decimal           @db.Decimal(18, 0) // Giá tiền (làm tròn xuống hàng triệu)
+  note             String?           // Ghi chú (tùy chọn)
+  sortOrder        Int               @default(0)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([loanId])
+  @@map("collateral_valuation_items")
 }
 
 /// Thông tin Người bảo lãnh (1 tài sản bảo lãnh chỉ có 1 người bảo lãnh - địa chỉ nhập tự do)

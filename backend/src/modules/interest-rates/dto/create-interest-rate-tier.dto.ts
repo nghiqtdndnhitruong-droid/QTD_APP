@@ -1,12 +1,16 @@
 import { LoanDurationType, LoanType } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsEnum,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 export class CreateInterestRateTierDto {
@@ -43,4 +47,24 @@ export class CreateInterestRateTierDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+}
+
+export class CreateInterestRateBatchDto {
+  @IsString()
+  @IsNotEmpty({ message: 'Thời gian ban hành không được để trống' })
+  effectiveDate: string;
+
+  @IsOptional()
+  @IsString()
+  documentNote?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isApplied?: boolean;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'Danh sách mức lãi suất không được để trống' })
+  @ValidateNested({ each: true })
+  @Type(() => CreateInterestRateTierDto)
+  tiers: CreateInterestRateTierDto[];
 }

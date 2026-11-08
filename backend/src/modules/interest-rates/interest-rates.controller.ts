@@ -11,10 +11,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
-import { CreateInterestRateTierDto } from './dto/create-interest-rate-tier.dto.js';
+import {
+  CreateInterestRateBatchDto,
+  CreateInterestRateTierDto,
+} from './dto/create-interest-rate-tier.dto.js';
 import {
   LookupInterestRateDto,
   QueryInterestRateTierDto,
+  UpdateInterestRateBatchDto,
   UpdateInterestRateTierDto,
 } from './dto/update-interest-rate-tier.dto.js';
 import { InterestRatesService } from './interest-rates.service.js';
@@ -23,6 +27,39 @@ import { InterestRatesService } from './interest-rates.service.js';
 @Controller('interest-rates')
 export class InterestRatesController {
   constructor(private readonly interestRatesService: InterestRatesService) {}
+
+  @Post('batches')
+  createBatch(@Body() dto: CreateInterestRateBatchDto) {
+    return this.interestRatesService.createBatch(dto);
+  }
+
+  @Get('batches')
+  findAllBatches() {
+    return this.interestRatesService.findAllBatches();
+  }
+
+  @Get('batches/:id')
+  findOneBatch(@Param('id', ParseUUIDPipe) id: string) {
+    return this.interestRatesService.findOneBatch(id);
+  }
+
+  @Patch('batches/:id')
+  updateBatch(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateInterestRateBatchDto,
+  ) {
+    return this.interestRatesService.updateBatch(id, dto);
+  }
+
+  @Patch('batches/:id/apply')
+  applyBatch(@Param('id', ParseUUIDPipe) id: string) {
+    return this.interestRatesService.applyBatch(id);
+  }
+
+  @Delete('batches/:id')
+  removeBatch(@Param('id', ParseUUIDPipe) id: string) {
+    return this.interestRatesService.removeBatch(id);
+  }
 
   @Post()
   create(@Body() dto: CreateInterestRateTierDto) {

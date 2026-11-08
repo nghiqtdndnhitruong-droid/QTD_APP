@@ -1,13 +1,16 @@
 import { LoanDurationType, LoanType } from '@prisma/client';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
   IsString,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { CreateInterestRateTierDto } from './create-interest-rate-tier.dto.js';
 
 export class UpdateInterestRateTierDto {
   @IsOptional()
@@ -43,6 +46,26 @@ export class UpdateInterestRateTierDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+}
+
+export class UpdateInterestRateBatchDto {
+  @IsOptional()
+  @IsString()
+  effectiveDate?: string;
+
+  @IsOptional()
+  @IsString()
+  documentNote?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isApplied?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateInterestRateTierDto)
+  tiers?: CreateInterestRateTierDto[];
 }
 
 export class QueryInterestRateTierDto {
